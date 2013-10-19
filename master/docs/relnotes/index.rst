@@ -117,6 +117,9 @@ Features
   
 * :bb:step:`CVS` source step now checks for "sticky dates" from a previous checkout before updating an existing source directory.
 
+* The Git step now uses the `git submodule update` option `--init` when updating the submodules of an existing repository,
+  so that it will receive any newly added submodules.
+
 Deprecations, Removals, and Non-Compatible Changes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
