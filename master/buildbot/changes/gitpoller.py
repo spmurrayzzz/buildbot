@@ -93,23 +93,63 @@ class GitPoller(base.PollingChangeSource, StateMixin):
         status = ""
         if not self.master:
             status = "[STOPPED - check log]"
+        if self.branches:
+            branches = ', '.join(self.branches)
+        else:
+            branches = 'ALL'
+
         str = ('GitPoller watching the remote git repository %s, branches: %s %s'
-                % (self.repourl, ', '.join(self.branches), status))
+                % (self.repourl, ', '.join(branches), status))
         return str
+
+    def _getBranches(self):
+        d = self._dovccmd('ls-remote', [self.repourl])
+        @d.addCallback
+        def parseRemote(rows):
+            branches = []
+            for row in rows.splitlines():
+                if not '\t' in row:
+                    # Not a useful line
+                    continue
+                sha, ref = row.split("\t")
+                branches.append(ref)
+            return branches
+        return d
+
+    def _headsFilter(self, branch):
+        """Filter out remote references that don't begin with 'refs/heads'."""
+        return branch.startswith("refs/heads/")
+
+    def _removeHeads(self, branch):
+        """Remove 'refs/heads/' prefix from remote references."""
+        if branch.startswith("refs/heads/"):
+            branch = branch[11:]
+        return branch
 
     @defer.inlineCallbacks
     def poll(self):
         yield self._dovccmd('init', ['--bare', self.workdir])
 
+        branches = self.branches
+        if branches is True or callable(branches):
+            branches = yield self._getBranches()
+            if callable(self.branches):
+                branches = filter(self.branches, branches)
+            else:
+                branches = filter(self._headsFilter, branches)
+            # We remove the refs/heads/ prefix here, so that
+            # poller state with bare branch names is respected
+            branches = map(self._removeHeads, branches)
+
         refspecs = [
                 '+%s:%s'% (branch, self._localBranch(branch))
-                for branch in self.branches
+                for branch in branches
                 ]
         yield self._dovccmd('fetch',
                 [self.repourl] + refspecs, path=self.workdir)
 
         revs = {}
-        for branch in self.branches:
+        for branch in branches:
             try:
                 revs[branch] = rev = yield self._dovccmd('rev-parse',
                         [self._localBranch(branch)], path=self.workdir)
@@ -122,7 +162,7 @@ class GitPoller(base.PollingChangeSource, StateMixin):
         yield self.setState('lastRev', self.lastRev)
 
     def _get_commit_comments(self, rev):
-        args = ['--no-walk', r'--format=%s%n%b', rev, '--']
+        args = [rev, '--no-walk', r'--format=%s%n%b']
         d = self._dovccmd('log',  args, path=self.workdir)
         def process(git_output):
             git_output = git_output.decode(self.encoding)
@@ -134,7 +174,7 @@ class GitPoller(base.PollingChangeSource, StateMixin):
 
     def _get_commit_timestamp(self, rev):
         # unix timestamp
-        args = ['--no-walk', r'--format=%ct', rev, '--']
+        args = [rev, '--no-walk', r'--format=%ct']
         d = self._dovccmd('log', args, path=self.workdir)
         def process(git_output):
             if self.usetimestamps:
@@ -150,7 +190,7 @@ class GitPoller(base.PollingChangeSource, StateMixin):
         return d
 
     def _get_commit_files(self, rev):
-        args = ['--name-only', '--no-walk', r'--format=%n', rev, '--']
+        args = [rev, '--name-only', '--no-walk', r'--format=%n']
         d = self._dovccmd('log', args, path=self.workdir)
         def process(git_output):
             fileList = git_output.split()
@@ -159,7 +199,7 @@ class GitPoller(base.PollingChangeSource, StateMixin):
         return d
             
     def _get_commit_author(self, rev):
-        args = ['--no-walk', r'--format=%aN <%aE>', rev, '--']
+        args = [rev, '--no-walk', r'--format=%aN <%aE>']
         d = self._dovccmd('log', args, path=self.workdir)
         def process(git_output):
             git_output = git_output.decode(self.encoding)
@@ -185,7 +225,7 @@ class GitPoller(base.PollingChangeSource, StateMixin):
             return
 
         # get the change list
-        revListArgs = [r'--format=%H', '%s..%s' % (lastRev, newRev), '--']
+        revListArgs = ['%s..%s' % (lastRev, newRev), r'--format=%H']
         self.changeCount = 0
         results = yield self._dovccmd('log', revListArgs, path=self.workdir)
 
@@ -234,8 +274,8 @@ class GitPoller(base.PollingChangeSource, StateMixin):
             "utility to handle the result of getProcessOutputAndValue"
             (stdout, stderr, code) = res
             if code != 0:
-                raise EnvironmentError('command on repourl %s failed with exit code %d: %s'
-                        % (self.repourl, code, stderr))
+                raise EnvironmentError('command failed with exit code %d: %s'
+                        % (code, stderr))
             return stdout.strip()
         d.addCallback(_convert_nonzero_to_failure)
         return d
